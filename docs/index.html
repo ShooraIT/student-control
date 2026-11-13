@@ -86,12 +86,22 @@ const params = new URLSearchParams(location.search);
 const store = { get(k){ try { return localStorage.getItem(k) || ""; } catch(e){ return ""; } },
                 set(k,v){ try { localStorage.setItem(k,v); } catch(e){} } };
 
+const toMin = s => { const [h, mm] = s.split(":").map(Number); return h * 60 + mm; };
+
+// Пары на сегодня: понедельник — свой график, вторник–суббота (и воскресенье) — общий
+function todayPairs(schedule) {
+  const day = schedule.days[new Date().getDay() === 1 ? "mon" : "tue_sat"];
+  return schedule.pairs.filter(p => day[p.id]).map(p => ({ ...p, periods: day[p.id],
+    start: toMin(day[p.id][0][0]), end: toMin(day[p.id][day[p.id].length - 1][1]) }));
+}
+
+// Текущая пара (если идут две — та, что началась позже), иначе ближайшая следующая
 function currentPair(pairs) {
-  const d = new Date(), m = d.getHours()*60 + d.getMinutes();
-  const toMin = s => { const [h,mm] = s.split(":").map(Number); return h*60+mm; };
-  // текущая пара, иначе ближайшая следующая (студент пришёл на перемене)
-  for (const p of pairs) if (m <= toMin(p.end)) return p.n;
-  return pairs[pairs.length-1].n;
+  const d = new Date(), m = d.getHours() * 60 + d.getMinutes();
+  const now = pairs.filter(p => p.start <= m && m <= p.end).sort((a, b) => b.start - a.start);
+  if (now.length) return now[0].id;
+  const next = pairs.filter(p => p.start > m).sort((a, b) => a.start - b.start);
+  return (next[0] || pairs[pairs.length - 1]).id;
 }
 
 // public.json: рассадка, звонки, канал ретранслятора и ОТКРЫТЫЙ ключ преподавателя.
@@ -112,9 +122,12 @@ fetch("public.json", { cache: "no-store" }).then(r => r.json()).then(c => {
       Object.entries(cfg.seats).sort((a, b) => a[0] - b[0]).map(([n, p]) =>
         `<option value="${n}">№ ${n} (ряд ${p.row}, место ${p.place})</option>`).join("");
   }
-  $("pair").innerHTML = cfg.pairs.map(p =>
-    `<option value="${p.n}">${p.n} пара (${p.start}–${p.end})</option>`).join("");
-  $("pair").value = currentPair(cfg.pairs);
+  const pairs = todayPairs(cfg.schedule);
+  $("pair").innerHTML = ["I", "II"].map(sh => `<optgroup label="${sh} смена">` +
+    pairs.filter(p => p.shift === sh).map(p =>
+      `<option value="${p.id}">${p.name} · ${p.periods.map(t => t.join("–")).join(", ")}</option>`).join("") +
+    `</optgroup>`).join("");
+  $("pair").value = currentPair(pairs);
 }).catch(() => { $("err").textContent = "Не удалось загрузить форму, обновите страницу"; $("err").hidden = false; });
 
 // Шифрование анкеты открытым ключом преподавателя (RSA-OAEP, SHA-256), блоками по 190 байт.
@@ -173,7 +186,7 @@ $("f").addEventListener("submit", async e => {
     await (cfg.local ? sendLocal(fd) : sendOnline(fd));
     store.set("fio", fd.fio); store.set("grp", fd.grp);
     $("formCard").hidden = true; $("doneCard").hidden = false;
-    $("doneText").textContent = `Рабочее место № ${fd.pc}, ${fd.pair} пара. ` +
+    $("doneText").textContent = `Рабочее место № ${fd.pc}, ${$("pair").selectedOptions[0].parentNode.label}, ${$("pair").selectedOptions[0].text.split(" · ")[0]}. ` +
       (fd.state === "problem" ? "Сообщение о проблеме отправлено преподавателю." : "Хорошей работы!");
   } catch (ex) {
     $("err").textContent = ex.message === "Failed to fetch" ? "Нет интернета — проверьте связь и отправьте ещё раз" : ex.message;

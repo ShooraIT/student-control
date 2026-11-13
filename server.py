@@ -50,15 +50,40 @@ DEFAULT_CONFIG = {
     },
     "teacher_password": "teacher",
     "room": "Аудитория",
-    # Расписание звонков: по нему в форме заранее выбирается текущая пара
-    "pairs": [
-        {"n": 1, "start": "08:30", "end": "10:00"},
-        {"n": 2, "start": "10:10", "end": "11:40"},
-        {"n": 3, "start": "12:10", "end": "13:40"},
-        {"n": 4, "start": "13:50", "end": "15:20"},
-        {"n": 5, "start": "15:30", "end": "17:00"},
-        {"n": 6, "start": "17:10", "end": "18:40"},
-    ],
+    # Расписание звонков колледжа (с 02.11.2026). Пара — это id; у пары может быть
+    # несколько частей (между ними обед). "mon" — понедельник, "tue_sat" — вторник–суббота.
+    "schedule": {
+        "pairs": [
+            {"id": "1-rov", "name": "Разговоры о важном", "shift": "I"},
+            {"id": "1-1", "name": "1 пара", "shift": "I"},
+            {"id": "1-2", "name": "2 пара", "shift": "I"},
+            {"id": "1-3", "name": "3 пара", "shift": "I"},
+            {"id": "2-rov", "name": "Разговоры о важном", "shift": "II"},
+            {"id": "2-1", "name": "1 пара", "shift": "II"},
+            {"id": "2-2", "name": "2 пара", "shift": "II"},
+            {"id": "2-3", "name": "3 пара", "shift": "II"},
+        ],
+        "days": {
+            "mon": {
+                "1-rov": [["08:00", "08:45"]],
+                "1-1": [["08:50", "10:20"]],
+                "1-2": [["10:30", "11:15"], ["11:35", "12:20"]],
+                "1-3": [["12:40", "13:25"], ["13:45", "14:30"]],
+                "2-rov": [["13:45", "14:30"]],
+                "2-1": [["14:35", "15:20"], ["15:40", "16:25"]],
+                "2-2": [["16:45", "18:15"]],
+                "2-3": [["18:25", "19:55"]],
+            },
+            "tue_sat": {
+                "1-1": [["08:20", "09:50"]],
+                "1-2": [["10:00", "10:45"], ["11:05", "11:50"]],
+                "1-3": [["12:10", "12:55"], ["13:15", "14:00"]],
+                "2-1": [["14:20", "15:05"], ["15:25", "16:10"]],
+                "2-2": [["16:30", "18:00"]],
+                "2-3": [["18:10", "19:40"]],
+            },
+        },
+    },
     # Онлайн-форма для студентов (GitHub Pages) — на неё ведут QR-коды
     "public_form_url": "https://shoorait.github.io/student-control/",
     # Ретранслятор: телефон отправляет туда зашифрованную анкету, сервер её забирает
@@ -70,20 +95,20 @@ DEFAULT_CONFIG = {
 
 
 def load_config():
-    cfg = dict(DEFAULT_CONFIG)
+    stored = {}
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH, encoding="utf-8") as f:
-            cfg.update(json.load(f))
-    changed = not os.path.exists(CONFIG_PATH)
-    for k in DEFAULT_CONFIG:  # дописать новые параметры в старый config.json
-        changed |= k not in cfg
+            stored = json.load(f)
+    cfg = {**DEFAULT_CONFIG, **stored}
+    # дописать новые параметры в старый config.json и убрать устаревшие (например, "pairs")
+    changed = set(stored) != set(DEFAULT_CONFIG)
     if not cfg.get("topic"):
         cfg["topic"] = "pcmon-" + secrets.token_urlsafe(18).replace("_", "x").replace("-", "y")
         changed = True
+    cfg = {k: cfg[k] for k in DEFAULT_CONFIG}
     if changed:
-        save = {k: cfg[k] for k in DEFAULT_CONFIG}
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(save, f, ensure_ascii=False, indent=2)
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
     return cfg
 
 
@@ -105,6 +130,11 @@ SEAT_POS = {pc: {"row": r + 1, "place": i + 1}
             for i, pc in enumerate(row)}
 SEATS = sorted(SEAT_POS)
 KEY = load_key()
+PAIR_LABEL = {p["id"]: f'{p["name"]} ({p["shift"]} смена)' for p in CONFIG["schedule"]["pairs"]}
+
+
+def pair_label(pid):
+    return PAIR_LABEL.get(str(pid), f"{pid} пара")
 SESSIONS = set()  # токены вошедших преподавателей
 DB_LOCK = threading.Lock()
 
@@ -125,7 +155,7 @@ def init_db():
                 pc INTEGER NOT NULL,
                 fio TEXT NOT NULL,
                 grp TEXT NOT NULL,
-                pair INTEGER NOT NULL,
+                pair TEXT NOT NULL,           -- id пары из schedule, напр. "1-2"
                 state TEXT NOT NULL,          -- ok | problem
                 comment TEXT NOT NULL DEFAULT '',
                 resolved_at TEXT,             -- когда преподаватель закрыл проблему
@@ -166,7 +196,7 @@ def base_url():
 
 def public_config():
     """То, что видит телефон студента: рассадка, звонки, канал и ОТКРЫТЫЙ ключ."""
-    return {"room": CONFIG["room"], "pairs": CONFIG["pairs"], "seats": SEAT_POS,
+    return {"room": CONFIG["room"], "schedule": CONFIG["schedule"], "seats": SEAT_POS,
             "relay": CONFIG["relay"].rstrip("/"), "topic": CONFIG["topic"],
             "public_key": rsa_lite.public_jwk(KEY)}
 
@@ -196,9 +226,10 @@ def save_registration(data, ts, relay_id=None):
     fio, grp, comment = clean("fio", 100), clean("grp", 30), clean("comment", 300)
     state = data.get("state")
     try:
-        pc, pair = int(data.get("pc", 0)), int(data.get("pair", 0))
+        pc = int(data.get("pc", 0))
     except (TypeError, ValueError):
-        pc = pair = 0
+        pc = 0
+    pair = str(data.get("pair", ""))
 
     errors = []
     if pc not in SEAT_POS:
@@ -207,7 +238,7 @@ def save_registration(data, ts, relay_id=None):
         errors.append("Укажите ФИО")
     if not grp:
         errors.append("Укажите группу")
-    if pair not in {p["n"] for p in CONFIG["pairs"]}:
+    if pair not in PAIR_LABEL:
         errors.append("Выберите пару")
     if state not in ("ok", "problem"):
         errors.append("Укажите состояние компьютера")
@@ -290,16 +321,18 @@ def board_state():
 
     seats = {n: {"pc": n, **SEAT_POS[n], "regs": [], "problems": [], "manual": n in manual}
              for n in SEATS}
+    regs = [{**r, "pair_label": pair_label(r["pair"])} for r in map(dict, regs)]
+    open_problems = [{**r, "pair_label": pair_label(r["pair"])} for r in map(dict, open_problems)]
     for r in regs:
         if r["pc"] in seats:
-            seats[r["pc"]]["regs"].append(dict(r))
+            seats[r["pc"]]["regs"].append(r)
     for r in open_problems:
         if r["pc"] in seats:
-            seats[r["pc"]]["problems"].append(dict(r))
+            seats[r["pc"]]["problems"].append(r)
     return {
         "session_start": start,
         "seats": list(seats.values()),
-        "problems": [dict(r) for r in open_problems],
+        "problems": open_problems,
         "layout": CONFIG["layout"],
         "room": CONFIG["room"],
         "server_time": now(),
@@ -391,7 +424,7 @@ class Handler(BaseHTTPRequestHandler):
         w.writerow(["Отметка времени", "ФИО студента", "Группа студента", "Пара",
                     "Рабочее место", "Состояние компьютера", "Комментарий", "Проблема закрыта"])
         for r in rows:
-            w.writerow([r["ts"], r["fio"], r["grp"], r["pair"], r["pc"],
+            w.writerow([r["ts"], r["fio"], r["grp"], pair_label(r["pair"]), r["pc"],
                         "Исправен" if r["state"] == "ok" else "Есть проблемы",
                         r["comment"], r["resolved_at"] or ""])
         name = f"registrations_{datetime.now():%Y-%m-%d}.csv"

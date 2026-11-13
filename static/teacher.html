@@ -161,7 +161,7 @@ function render() {
       <div class="n">№${p.pc}</div>
       <div class="body">
         <div class="what">${esc(p.comment || "Проблема с компьютером")}</div>
-        <div class="who">${esc(p.fio)}, ${esc(p.grp)} · ${p.pair} пара · ${dm(p.ts)}</div>
+        <div class="who">${esc(p.fio)}, ${esc(p.grp)} · ${esc(p.pair_label)} · ${dm(p.ts)}</div>
       </div>
       <button class="btn" data-resolve="${p.id}">Решено</button>
     </div>`).join("");
@@ -187,7 +187,7 @@ function render() {
     if (last) {
       cls = "ok"; st = "Зарегистрирован";
       inner = `<div class="fio">${esc(last.fio)}</div>
-               <div class="meta">${esc(last.grp)} · ${last.pair} пара · ${hm(last.ts)}${others > 0 ? ` · ещё ${others} чел.` : ""}</div>`;
+               <div class="meta">${esc(last.grp)} · ${esc(last.pair_label)} · ${hm(last.ts)}${others > 0 ? ` · ещё ${others} чел.` : ""}</div>`;
     } else if (seat.manual) {
       cls = "manual"; st = "Нет регистрации";
       inner = `<div class="meta">Занято, студент не отметился</div>`;
@@ -210,7 +210,7 @@ function render() {
   $("log").innerHTML = regs.length ? `<table>
     <tr><th>Время</th><th>Место</th><th>ФИО</th><th>Группа</th><th>Пара</th><th>Состояние</th><th>Комментарий</th></tr>
     ${regs.map(r => `<tr class="${r.state === "problem" ? "p" : ""}">
-      <td>${hm(r.ts)}</td><td>${r.pc}</td><td>${esc(r.fio)}</td><td>${esc(r.grp)}</td><td>${r.pair}</td>
+      <td>${hm(r.ts)}</td><td>${r.pc}</td><td>${esc(r.fio)}</td><td>${esc(r.grp)}</td><td>${esc(r.pair_label)}</td>
       <td>${r.state === "ok" ? "✅ Исправен" : (r.resolved_at ? "☑️ Проблема (решена)" : "⚠️ Проблема")}</td>
       <td>${esc(r.comment)}</td></tr>`).join("")}</table>`
     : `<div class="empty">Пока никто не зарегистрировался.</div>`;
