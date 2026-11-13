@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Рабочие места — преподаватель</title>
+<style>
+  :root { --bg:#eef1f6; --card:#fff; --text:#1c2330; --muted:#677185; --line:#d8dde7;
+          --accent:#2563eb; --ok:#16a34a; --okbg:#dcfce7; --warn:#b45309; --warnbg:#fef3c7;
+          --bad:#dc2626; --badbg:#fee2e2; --free:#f8fafc; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display:flex; flex-wrap:wrap; align-items:center; gap:12px; padding:12px 20px;
+           background:var(--card); border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5; }
+  header h1 { font-size:18px; margin:0; }
+  .stat { padding:4px 10px; border-radius:999px; background:var(--free); border:1px solid var(--line); font-weight:600; }
+  .stat.bad { background:var(--bad); color:#fff; border-color:var(--bad); }
+  .spacer { flex:1; }
+  .btn { font:inherit; padding:8px 14px; border-radius:10px; border:1px solid var(--line);
+         background:#fff; cursor:pointer; text-decoration:none; color:inherit; }
+  .btn.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .btn.on { background:var(--okbg); border-color:var(--ok); }
+  .conn { font-size:13px; color:var(--muted); }
+  .conn.lost { color:var(--bad); font-weight:700; }
+  main { padding:16px 20px 40px; }
+
+  /* баннер проблем */
+  #alerts { margin-bottom:16px; }
+  .alert { display:flex; gap:14px; align-items:center; padding:14px 18px; margin-bottom:8px;
+           background:var(--bad); color:#fff; border-radius:14px; animation:flash 1.2s infinite;
+           box-shadow:0 6px 20px rgba(220,38,38,.35); }
+  .alert .n { font-size:30px; font-weight:800; min-width:70px; text-align:center;
+              background:rgba(255,255,255,.18); border-radius:10px; padding:4px 8px; }
+  .alert .body { flex:1; }
+  .alert .who { font-size:13px; opacity:.9; }
+  .alert .what { font-size:18px; font-weight:700; }
+  .alert .btn { background:#fff; color:var(--bad); border:0; font-weight:700; }
+  @keyframes flash { 50% { background:#991b1b; } }
+
+  /* схема аудитории */
+  #grid { display:grid; gap:8px; max-width:1100px; margin:0 auto; }
+  .desk { grid-row:1; padding:10px; text-align:center; font-weight:700; color:#fff; background:#475569;
+          border-radius:12px; margin-bottom:6px; }
+  .rowlabel { text-align:center; font-size:12px; font-weight:700; color:var(--muted);
+              text-transform:uppercase; letter-spacing:.05em; }
+  .aisle { border-radius:8px; background:repeating-linear-gradient(180deg, transparent 0 10px, #dbe1ea 10px 20px);
+           width:4px; justify-self:center; }
+  .seat { position:relative; min-height:68px; padding:6px 10px; border-radius:12px; cursor:pointer;
+          background:var(--free); border:2px dashed var(--line); user-select:none; overflow:hidden; }
+  .seat .head { display:flex; align-items:baseline; gap:8px; }
+  .seat .num { font-size:20px; font-weight:800; color:var(--muted); }
+  .seat .st { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; color:var(--muted);
+              white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .seat .fio { font-weight:600; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .seat .meta { font-size:12px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .seat .prob { font-size:13px; font-weight:700; color:var(--bad); white-space:normal; }
+  .seat.ok { background:var(--okbg); border:2px solid var(--ok); }
+  .seat.ok .num, .seat.ok .st { color:var(--ok); }
+  .seat.manual { background:var(--warnbg); border:2px solid #f59e0b; }
+  .seat.manual .num, .seat.manual .st { color:var(--warn); }
+  .seat.problem { background:var(--badbg); border:3px solid var(--bad); animation:pulse 1.2s infinite; }
+  .seat.problem .num, .seat.problem .st { color:var(--bad); }
+  .seat .badge { position:absolute; top:4px; right:6px; font-size:18px; }
+  @media (max-width:700px) {
+    #grid { gap:5px; } .seat { padding:4px 6px; min-height:56px; }
+    .seat .st, .seat .meta { display:none; } .seat .fio { font-size:12px; }
+  }
+  @keyframes pulse { 0%,100% { box-shadow:0 0 0 0 rgba(220,38,38,.6); } 50% { box-shadow:0 0 0 8px rgba(220,38,38,0); } }
+
+  .legend { display:flex; flex-wrap:wrap; gap:14px; margin:14px 0 22px; color:var(--muted); font-size:13px; }
+  .legend i { display:inline-block; width:14px; height:14px; border-radius:4px; vertical-align:-2px; margin-right:6px; }
+
+  h2 { font-size:16px; margin:0 0 8px; }
+  table { width:100%; border-collapse:collapse; background:var(--card); border-radius:12px; overflow:hidden; }
+  th, td { padding:8px 10px; text-align:left; border-bottom:1px solid var(--line); font-size:14px; vertical-align:top; }
+  th { background:#f8fafc; color:var(--muted); font-weight:600; }
+  tr.p td { background:#fff5f5; }
+  .empty { color:var(--muted); padding:16px; background:var(--card); border-radius:12px; }
+  @media (max-width:700px) { main, header { padding-left:12px; padding-right:12px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="room">Рабочие места</h1>
+  <span class="stat" id="sReg">—</span>
+  <span class="stat" id="sProb">Проблем нет</span>
+  <span class="conn" id="conn"></span>
+  <span class="spacer"></span>
+  <button class="btn" id="sound" title="Звуковой сигнал при новой проблеме">🔕 Звук выкл.</button>
+  <a class="btn" href="/qr" target="_blank">QR-коды</a>
+  <a class="btn" href="/export.csv">Скачать журнал (CSV)</a>
+  <button class="btn primary" id="newSession">Новая пара</button>
+</header>
+<main>
+  <div id="alerts"></div>
+  <div id="grid"></div>
+  <div class="legend">
+    <span><i style="background:var(--free);border:1px dashed #aab"></i>Свободно</span>
+    <span><i style="background:var(--okbg);border:1px solid var(--ok)"></i>Зарегистрирован</span>
+    <span><i style="background:var(--warnbg);border:1px solid #f59e0b"></i>Занято, но нет регистрации (отмечено вами)</span>
+    <span><i style="background:var(--badbg);border:1px solid var(--bad)"></i>Проблема с компьютером</span>
+    <span>Клик по свободному месту — отметить «занято без регистрации».</span>
+  </div>
+  <h2 id="logTitle">Регистрации на текущей паре</h2>
+  <div id="log"></div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const hm = ts => ts ? ts.slice(11, 16) : "";
+const dm = ts => ts ? `${ts.slice(8,10)}.${ts.slice(5,7)} ${hm(ts)}` : "";
+
+let state = null, seenProblems = null, soundOn = false, audio = null, titleTimer = null;
+try { soundOn = localStorage.getItem("sound") === "1"; } catch (e) {}
+
+async function post(url, data) {
+  const r = await fetch(url, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(data||{}) });
+  if (r.status === 401) location.href = "/login";
+  await load();
+}
+
+function beep() {
+  if (!soundOn) return;
+  try {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    [0, 0.25, 0.5].forEach(t => {
+      const o = audio.createOscillator(), g = audio.createGain();
+      o.type = "square"; o.frequency.value = 880;
+      g.gain.setValueAtTime(0.15, audio.currentTime + t);
+      g.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + t + 0.2);
+      o.connect(g).connect(audio.destination);
+      o.start(audio.currentTime + t); o.stop(audio.currentTime + t + 0.2);
+    });
+  } catch (e) {}
+}
+
+function setTitle(nProblems) {
+  clearInterval(titleTimer);
+  const base = "Рабочие места — преподаватель";
+  if (!nProblems) { document.title = base; return; }
+  let on = false;
+  titleTimer = setInterval(() => { on = !on; document.title = on ? `⚠️ ПРОБЛЕМ: ${nProblems}` : base; }, 1000);
+}
+
+function render() {
+  const s = state;
+  $("room").textContent = s.room;
+  const registered = s.seats.filter(x => x.regs.length).length;
+  const manual = s.seats.filter(x => !x.regs.length && x.manual).length;
+  $("sReg").textContent = `Зарегистрировано: ${registered} / ${s.seats.length}` + (manual ? ` · без регистрации: ${manual}` : "");
+  $("sProb").textContent = s.problems.length ? `⚠️ Проблем: ${s.problems.length}` : "Проблем нет";
+  $("sProb").className = "stat" + (s.problems.length ? " bad" : "");
+  $("logTitle").textContent = `Регистрации на текущей паре (с ${dm(s.session_start)})`;
+
+  // уведомления
+  $("alerts").innerHTML = s.problems.slice().reverse().map(p => `
+    <div class="alert">
+      <div class="n">№${p.pc}</div>
+      <div class="body">
+        <div class="what">${esc(p.comment || "Проблема с компьютером")}</div>
+        <div class="who">${esc(p.fio)}, ${esc(p.grp)} · ${p.pair} пара · ${dm(p.ts)}</div>
+      </div>
+      <button class="btn" data-resolve="${p.id}">Решено</button>
+    </div>`).join("");
+
+  // схема аудитории: стол преподавателя сверху, ряды — вертикальные колонки, между ними проходы
+  const L = s.layout, maxLen = Math.max(...L.rows.map(r => r.length));
+  const tracks = [], colOf = {};
+  L.rows.forEach((_, i) => {
+    tracks.push("minmax(0,1fr)"); colOf[i + 1] = tracks.length;
+    if (L.aisles_after.includes(i + 1) && i < L.rows.length - 1) tracks.push("28px");
+  });
+  $("grid").style.gridTemplateColumns = tracks.join(" ");
+  const tr = L.teacher_rows;
+  let html = `<div class="desk" style="grid-column:${colOf[Math.min(...tr)]} / ${colOf[Math.max(...tr)] + 1}">🧑‍🏫 Стол преподавателя</div>`;
+  L.aisles_after.filter(a => a < L.rows.length).forEach(a =>
+    html += `<div class="aisle" style="grid-column:${colOf[a] + 1};grid-row:2 / span ${maxLen + 1}"></div>`);
+  L.rows.forEach((_, i) => html += `<div class="rowlabel" style="grid-column:${colOf[i + 1]};grid-row:2">Ряд ${i + 1}</div>`);
+
+  html += s.seats.map(seat => {
+    const last = seat.regs[seat.regs.length - 1];
+    const others = new Set(seat.regs.map(r => r.fio.toLowerCase())).size - 1;
+    let cls = "", st = "Свободно", inner = "";
+    if (last) {
+      cls = "ok"; st = "Зарегистрирован";
+      inner = `<div class="fio">${esc(last.fio)}</div>
+               <div class="meta">${esc(last.grp)} · ${last.pair} пара · ${hm(last.ts)}${others > 0 ? ` · ещё ${others} чел.` : ""}</div>`;
+    } else if (seat.manual) {
+      cls = "manual"; st = "Нет регистрации";
+      inner = `<div class="meta">Занято, студент не отметился</div>`;
+    }
+    if (seat.problems.length) {
+      cls = "problem"; st = "Проблема";
+      inner += `<div class="prob">⚠️ ${esc(seat.problems[seat.problems.length-1].comment)}</div>`;
+    }
+    const tip = `Ряд ${seat.row}, место ${seat.place}\n` +
+      seat.regs.map(r => `${hm(r.ts)} ${r.fio} (${r.grp}) — ${r.state === "ok" ? "исправен" : "проблема: " + r.comment}`).join("\n");
+    return `<div class="seat ${cls}" style="grid-column:${colOf[seat.row]};grid-row:${seat.place + 2}"
+      data-pc="${seat.pc}" data-has="${last ? 1 : 0}" title="${esc(tip)}">
+      ${seat.problems.length ? '<span class="badge">🚨</span>' : ""}
+      <div class="head"><span class="num">${seat.pc}</span><span class="st">${st}</span></div>${inner}</div>`;
+  }).join("");
+  $("grid").innerHTML = html;
+
+  // журнал текущей пары
+  const regs = s.seats.flatMap(x => x.regs).sort((a, b) => b.id - a.id);
+  $("log").innerHTML = regs.length ? `<table>
+    <tr><th>Время</th><th>Место</th><th>ФИО</th><th>Группа</th><th>Пара</th><th>Состояние</th><th>Комментарий</th></tr>
+    ${regs.map(r => `<tr class="${r.state === "problem" ? "p" : ""}">
+      <td>${hm(r.ts)}</td><td>${r.pc}</td><td>${esc(r.fio)}</td><td>${esc(r.grp)}</td><td>${r.pair}</td>
+      <td>${r.state === "ok" ? "✅ Исправен" : (r.resolved_at ? "☑️ Проблема (решена)" : "⚠️ Проблема")}</td>
+      <td>${esc(r.comment)}</td></tr>`).join("")}</table>`
+    : `<div class="empty">Пока никто не зарегистрировался.</div>`;
+}
+
+async function load() {
+  try {
+    const r = await fetch("/api/state", { cache: "no-store" });
+    if (r.status === 401) { location.href = "/login"; return; }
+    state = await r.json();
+    const ids = new Set(state.problems.map(p => p.id));
+    if (seenProblems && [...ids].some(id => !seenProblems.has(id))) beep();
+    if (!seenProblems || ids.size !== seenProblems.size) setTitle(ids.size);
+    seenProblems = ids;
+    render();
+    $("conn").textContent = `обновлено ${new Date().toLocaleTimeString("ru-RU")}`;
+    $("conn").className = "conn";
+  } catch (e) {
+    $("conn").textContent = "⛔ нет связи с сервером";
+    $("conn").className = "conn lost";
+  }
+}
+
+document.addEventListener("click", e => {
+  const res = e.target.closest("[data-resolve]");
+  if (res) return post("/api/resolve", { id: +res.dataset.resolve });
+  const seat = e.target.closest(".seat");
+  if (seat) {
+    const pc = +seat.dataset.pc;
+    if (seat.classList.contains("problem")) {
+      if (confirm(`Отметить проблемы на месте №${pc} как решённые?`)) post("/api/resolve_pc", { pc });
+    } else if (seat.dataset.has === "0") post("/api/toggle_manual", { pc });
+  }
+});
+
+$("newSession").onclick = () => {
+  if (confirm("Начать новую пару? Схема мест очистится (журнал сохранится, нерешённые проблемы останутся).")) post("/api/new_session");
+};
+
+function paintSound() { $("sound").textContent = soundOn ? "🔔 Звук вкл." : "🔕 Звук выкл."; $("sound").classList.toggle("on", soundOn); }
+$("sound").onclick = () => {
+  soundOn = !soundOn;
+  try { localStorage.setItem("sound", soundOn ? "1" : "0"); } catch (e) {}
+  paintSound(); if (soundOn) beep();
+};
+paintSound();
+
+load();
+setInterval(load, 3000);
+</script>
+</body>
+</html>

@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Регистрация на рабочем месте</title>
+<style>
+  :root { --bg:#f3f5f9; --card:#fff; --text:#1c2330; --muted:#677185; --line:#d8dde7;
+          --accent:#2563eb; --ok:#16a34a; --bad:#dc2626; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width:480px; margin:0 auto; padding:16px; }
+  .card { background:var(--card); border-radius:16px; padding:20px; box-shadow:0 2px 10px rgba(0,0,0,.06); }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .seat { font-size:44px; font-weight:800; color:var(--accent); line-height:1.1; margin:8px 0 16px; }
+  .seat small { display:block; font-size:14px; color:var(--muted); font-weight:500; }
+  label { display:block; font-weight:600; margin:14px 0 6px; }
+  input, select, textarea { width:100%; font:inherit; padding:12px; border:1px solid var(--line);
+         border-radius:10px; background:#fff; color:inherit; }
+  textarea { min-height:90px; resize:vertical; }
+  .states { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .states input { display:none; }
+  .states label { margin:0; padding:14px 10px; text-align:center; border:2px solid var(--line);
+         border-radius:12px; cursor:pointer; font-weight:600; }
+  #st-ok:checked + label { border-color:var(--ok); background:#ecfdf3; color:var(--ok); }
+  #st-problem:checked + label { border-color:var(--bad); background:#fef2f2; color:var(--bad); }
+  button { width:100%; margin-top:20px; padding:14px; font:inherit; font-weight:700; color:#fff;
+         background:var(--accent); border:0; border-radius:12px; cursor:pointer; }
+  button:disabled { opacity:.6; }
+  .err { color:var(--bad); margin-top:12px; }
+  .hint { color:var(--muted); font-size:14px; }
+  .done { text-align:center; padding:30px 10px; }
+  .done .big { font-size:60px; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div class="card" id="formCard">
+    <h1>Регистрация на рабочем месте</h1>
+    <div class="hint" id="room"></div>
+    <div class="seat" id="seatBox" hidden></div>
+
+    <form id="f" novalidate>
+      <div id="pcPick" hidden>
+        <label for="pc">Номер рабочего места</label>
+        <select id="pc" name="pc"></select>
+      </div>
+
+      <label for="fio">ФИО студента</label>
+      <input id="fio" name="fio" autocomplete="name" placeholder="Иванов Иван Иванович" required>
+
+      <label for="grp">Группа</label>
+      <input id="grp" name="grp" placeholder="Например, ИСП-21" required>
+
+      <label for="pair">Пара</label>
+      <select id="pair" name="pair" required></select>
+
+      <label>Состояние компьютера</label>
+      <div class="states">
+        <input type="radio" name="state" id="st-ok" value="ok">
+        <label for="st-ok">✅ Всё работает</label>
+        <input type="radio" name="state" id="st-problem" value="problem">
+        <label for="st-problem">⚠️ Есть проблемы</label>
+      </div>
+
+      <label for="comment">Комментарий <span class="hint" id="cHint">(необязательно)</span></label>
+      <textarea id="comment" name="comment" placeholder="Что не работает: не включается монитор, нет интернета, не запускается программа…"></textarea>
+
+      <button id="send" type="submit">Отправить</button>
+      <div class="err" id="err" hidden></div>
+    </form>
+  </div>
+
+  <div class="card done" id="doneCard" hidden>
+    <div class="big">✅</div>
+    <h1>Вы зарегистрированы</h1>
+    <p class="hint" id="doneText"></p>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const store = { get(k){ try { return localStorage.getItem(k) || ""; } catch(e){ return ""; } },
+                set(k,v){ try { localStorage.setItem(k,v); } catch(e){} } };
+
+function currentPair(pairs) {
+  const d = new Date(), m = d.getHours()*60 + d.getMinutes();
+  const toMin = s => { const [h,mm] = s.split(":").map(Number); return h*60+mm; };
+  // текущая пара, иначе ближайшая следующая (студент пришёл на перемене)
+  for (const p of pairs) if (m <= toMin(p.end)) return p.n;
+  return pairs[pairs.length-1].n;
+}
+
+fetch("/api/config").then(r => r.json()).then(cfg => {
+  $("room").textContent = cfg.room;
+  const pc = parseInt(params.get("pc"), 10);
+  const pos = cfg.seats[pc];
+  if (pos) {
+    $("seatBox").hidden = false;
+    $("seatBox").innerHTML = `<small>Рабочее место · ряд ${pos.row}, ${pos.place}-е от преподавателя</small>№ ${pc}`;
+    $("pc").innerHTML = `<option value="${pc}">${pc}</option>`;
+  } else {
+    $("pcPick").hidden = false;
+    $("pc").innerHTML = `<option value="">— выберите —</option>` +
+      Object.entries(cfg.seats).sort((a, b) => a[0] - b[0]).map(([n, p]) =>
+        `<option value="${n}">№ ${n} (ряд ${p.row}, место ${p.place})</option>`).join("");
+  }
+  $("pair").innerHTML = cfg.pairs.map(p =>
+    `<option value="${p.n}">${p.n} пара (${p.start}–${p.end})</option>`).join("");
+  $("pair").value = currentPair(cfg.pairs);
+});
+
+$("fio").value = store.get("fio");
+$("grp").value = store.get("grp");
+
+document.querySelectorAll('input[name=state]').forEach(r => r.addEventListener("change", () => {
+  const problem = $("st-problem").checked;
+  $("cHint").textContent = problem ? "(обязательно — опишите проблему)" : "(необязательно)";
+  if (problem) $("comment").focus();
+}));
+
+$("f").addEventListener("submit", async e => {
+  e.preventDefault();
+  const fd = Object.fromEntries(new FormData($("f")));
+  $("err").hidden = true;
+  $("send").disabled = true;
+  try {
+    const r = await fetch("/api/register", { method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify(fd) });
+    const res = await r.json();
+    if (!r.ok) throw new Error(res.error || "Ошибка отправки");
+    store.set("fio", fd.fio); store.set("grp", fd.grp);
+    $("formCard").hidden = true; $("doneCard").hidden = false;
+    $("doneText").textContent = `Рабочее место № ${fd.pc}, ${fd.pair} пара. ` +
+      (fd.state === "problem" ? "Преподаватель получил сообщение о проблеме." : "Хорошей работы!");
+  } catch (ex) {
+    $("err").textContent = ex.message === "Failed to fetch" ? "Нет связи с сервером" : ex.message;
+    $("err").hidden = false;
+  } finally { $("send").disabled = false; }
+});
+</script>
+</body>
+</html>
