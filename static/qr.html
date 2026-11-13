@@ -12,7 +12,7 @@
   .bar input { font:inherit; padding:8px; min-width:260px; border:1px solid #ccd; border-radius:8px; }
   .bar button { font:inherit; padding:8px 14px; border-radius:8px; border:0; background:#2563eb; color:#fff; cursor:pointer; }
   #cards { display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:12px; }
-  .card { border:2px dashed #aab; border-radius:12px; padding:12px; text-align:center; break-inside:avoid; }
+  .card { display:block; color:inherit; text-decoration:none; border:2px dashed #aab; border-radius:12px; padding:12px; text-align:center; break-inside:avoid; }
   .card .n { font-size:34px; font-weight:800; }
   .card .t { font-size:12px; color:#556; margin-bottom:6px; }
   .card .q { display:flex; justify-content:center; }
@@ -38,8 +38,8 @@ function draw() {
   const seats = Object.entries(info.seats).sort((a, b) => a[0] - b[0]);
   for (const [i, p] of seats) {
     const url = `${base}${base.includes("?") ? "&" : "?"}pc=${i}`;
-    const c = document.createElement("div");
-    c.className = "card";
+    const c = document.createElement("a");  // по карточке можно кликнуть и проверить форму
+    c.className = "card"; c.href = url; c.target = "_blank"; c.title = "Открыть форму этого места";
     c.innerHTML = `<div class="n">№ ${i}</div><div class="t">Ряд ${p.row}, место ${p.place}<br>Отсканируйте и зарегистрируйтесь</div><div class="q"></div><div class="u"></div>`;
     c.querySelector(".u").textContent = url;
     $("cards").appendChild(c);

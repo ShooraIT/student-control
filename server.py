@@ -135,7 +135,6 @@ PAIR_LABEL = {p["id"]: f'{p["name"]} ({p["shift"]} смена)' for p in CONFIG[
 
 def pair_label(pid):
     return PAIR_LABEL.get(str(pid), f"{pid} пара")
-SESSIONS = set()  # токены вошедших преподавателей
 DB_LOCK = threading.Lock()
 
 
@@ -163,6 +162,7 @@ def init_db():
             );
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
             CREATE TABLE IF NOT EXISTS manual_busy (pc INTEGER PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS teacher_sessions (token TEXT PRIMARY KEY);
             """
         )
         conn.execute(
@@ -375,7 +375,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def is_teacher(self):
         c = cookies.SimpleCookie(self.headers.get("Cookie", ""))
-        return "t" in c and c["t"].value in SESSIONS
+        if "t" not in c:
+            return False
+        with db() as conn:
+            return conn.execute("SELECT 1 FROM teacher_sessions WHERE token=?",
+                                (c["t"].value,)).fetchone() is not None
 
     def read_body(self):
         length = int(self.headers.get("Content-Length") or 0)
@@ -401,7 +405,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.is_teacher():
             if path.startswith("/api/") or path.endswith(".csv"):
                 return self.send(401, {"error": "auth"})
-            return self.redirect("/login")
+            return self.redirect("/login?next=" + quote(path))
 
         if path == "/teacher":
             return self.page("teacher.html")
@@ -440,13 +444,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(400, {"error": "Некорректные данные"})
 
         if path == "/login":
+            nxt = data.get("next") if data.get("next") in ("/teacher", "/qr") else "/teacher"
             if secrets.compare_digest(str(data.get("password", "")),
                                       str(CONFIG["teacher_password"])):
                 token = secrets.token_urlsafe(24)
-                SESSIONS.add(token)
-                return self.redirect("/teacher", {
+                with DB_LOCK, db() as conn:  # вход сохраняется и после перезапуска сервера
+                    conn.execute("INSERT INTO teacher_sessions(token) VALUES (?)", (token,))
+                return self.redirect(nxt, {
                     "Set-Cookie": f"t={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000"})
-            return self.redirect("/login?error=1")
+            return self.redirect("/login?error=1&next=" + quote(nxt))
 
         if path == "/api/register":
             err = save_registration(data, now())

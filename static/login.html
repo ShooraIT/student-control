@@ -19,12 +19,15 @@
 <body>
 <form method="post" action="/login">
   <h1>Вход преподавателя</h1>
+  <input type="hidden" name="next" id="next">
   <input type="password" name="password" placeholder="Пароль" autofocus required>
   <button>Войти</button>
   <div class="err" id="err" hidden>Неверный пароль</div>
 </form>
 <script>
-  if (new URLSearchParams(location.search).has("error")) document.getElementById("err").hidden = false;
+  const q = new URLSearchParams(location.search);
+  if (q.has("error")) document.getElementById("err").hidden = false;
+  document.getElementById("next").value = q.get("next") || "/teacher";
 </script>
 </body>
 </html>
