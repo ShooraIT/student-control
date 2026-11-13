@@ -194,7 +194,12 @@ function render() {
   $("logTitle").textContent = `Регистрации на текущей паре (с ${dm(s.session_start)})`;
 
   // уведомления
-  $("alerts").innerHTML = s.problems.slice().reverse().map(p => `
+  const mismatch = s.relay.form_mismatch ? `<div class="alert" style="animation:none;background:#7f1d1d">
+      <div class="n">⛔</div><div class="body">
+      <div class="what">Онлайн-форма настроена на другой компьютер — анкеты студентов сюда не придут</div>
+      <div class="who">Скопируйте в папку программы teacher_key.json и config.json с компьютера, где настраивалась форма, и перезапустите start.bat.</div>
+      </div></div>` : "";
+  $("alerts").innerHTML = mismatch + s.problems.slice().reverse().map(p => `
     <div class="alert">
       <div class="n">№${p.pc}</div>
       <div class="body">

@@ -36,6 +36,9 @@ PUBLIC_JSON = os.path.join(DOCS_DIR, "public.json")
 
 DEFAULT_CONFIG = {
     "port": 8080,
+    # 127.0.0.1 — сервер виден только этому компьютеру (студенты работают через онлайн-форму).
+    # "0.0.0.0" — открыть для локальной сети (запасная форма /form), нужен доступ в брандмауэре.
+    "host": "127.0.0.1",
     # Рассадка: ряды слева направо (как видит преподаватель со своего места),
     # в каждом ряду номера мест от стола преподавателя к задней стене (нумерация «змейкой»).
     "layout": {
@@ -258,7 +261,8 @@ def save_registration(data, ts, relay_id=None):
     return ""
 
 
-RELAY_STATUS = {"ok": False, "since": None, "error": "ещё не подключено", "received": 0}
+RELAY_STATUS = {"ok": False, "since": None, "error": "ещё не подключено", "received": 0,
+                "form_mismatch": False, "form_check": ""}
 
 
 def get_setting(key, default=None):
@@ -534,23 +538,69 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(200, {"ok": True})
 
 
+def check_online_form():
+    """Сверяет опубликованную онлайн-форму с ключом и каналом этого компьютера."""
+    if not CONFIG["public_form_url"]:
+        return
+    url = CONFIG["public_form_url"].rstrip("/") + "/public.json"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "pc-monitor", "Cache-Control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            online = json.load(resp)
+    except Exception as ex:
+        RELAY_STATUS["form_check"] = f"не удалось проверить онлайн-форму: {ex}"
+        return
+    mine = public_config()
+    if online.get("public_key", {}).get("n") != mine["public_key"]["n"] or online.get("topic") != mine["topic"]:
+        RELAY_STATUS["form_mismatch"] = True
+        print("\n" + "!" * 60)
+        print("  ОНЛАЙН-ФОРМА НАСТРОЕНА НА ДРУГОЙ КОМПЬЮТЕР — анкеты сюда НЕ придут.")
+        print("  Скопируйте в эту папку teacher_key.json и config.json с компьютера,")
+        print("  где форма настраивалась, и перезапустите сервер. Либо загрузите")
+        print("  docs/public.json из этой папки на GitHub (в папку docs репозитория).")
+        print("!" * 60 + "\n")
+    elif online.get("schedule") != mine["schedule"] or online.get("seats") != json.loads(json.dumps(mine["seats"])):
+        RELAY_STATUS["form_check"] = "рассадка или звонки на этом компьютере отличаются от онлайн-формы"
+
+
+def start_server():
+    """Слушаем только этот компьютер (студенты отправляют анкеты через интернет).
+    Если порт занят или запрещён политикой Windows — берём следующий свободный."""
+    host, port = CONFIG["host"], int(CONFIG["port"])
+    # На Windows SO_REUSEADDR позволяет двум программам «занять» один порт — отключаем
+    ThreadingHTTPServer.allow_reuse_address = os.name != "nt"
+    for p in list(range(port, port + 20)) + [0]:
+        try:
+            return ThreadingHTTPServer((host, p), Handler)
+        except OSError as ex:
+            print(f"  Порт {p} недоступен ({ex.strerror or ex}), пробую другой...")
+    raise SystemExit("Не удалось открыть ни один порт")
+
+
 def main():
     init_db()
     changed = write_public_json()
     threading.Thread(target=relay_loop, daemon=True).start()
-    port = int(CONFIG["port"])
-    srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    srv = start_server()
+    port = srv.server_address[1]
+    teacher = f"http://localhost:{port}/teacher"
     print("=" * 60)
-    print(f"  Преподаватель:  http://localhost:{port}/teacher  (пароль в config.json)")
+    print(f"  Преподаватель:  {teacher}  (пароль в config.json)")
     print(f"  QR-коды мест:   http://localhost:{port}/qr")
     print(f"  Онлайн-форма:   {form_url()}")
-    print(f"  Запасная форма в локальной сети: {base_url()}/form")
-    if changed:
-        print("\n  !!! Изменился docs/public.json (ключ, рассадка или звонки).")
-        print("      Загрузите его на GitHub, иначе онлайн-форма будет со старыми данными:")
-        print("      git add docs/public.json && git commit -m \"public.json\" && git push")
-    print("  Остановить: Ctrl+C")
+    if CONFIG["host"] not in ("127.0.0.1", "localhost"):
+        print(f"  Запасная форма в локальной сети: {base_url()}/form")
+    print("  Не закрывайте это окно, пока идут занятия. Остановить: Ctrl+C")
     print("=" * 60)
+    if changed:
+        print("  (обновлён docs/public.json)")
+    check_online_form()
+    if not os.environ.get("PCMON_NO_BROWSER"):
+        try:
+            import webbrowser
+            webbrowser.open(teacher)
+        except Exception:
+            pass
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
