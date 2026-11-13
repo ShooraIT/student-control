@@ -1,10 +1,13 @@
 """Мониторинг рабочих мест компьютерного класса.
 
 Запуск:  py server.py
-Студенты: http://<IP>:<порт>/form?pc=N   (по QR-коду на столе)
-Преподаватель: http://<IP>:<порт>/teacher
+Студенты: онлайн-форма на GitHub Pages (QR-код на столе) — анкета шифруется в телефоне
+          открытым ключом преподавателя и через ретранслятор ntfy.sh приходит сюда.
+          Запасной вариант в локальной сети: http://<IP>:<порт>/form?pc=N
+Преподаватель: http://localhost:<порт>/teacher
 
-Только стандартная библиотека Python 3.9+, данные в SQLite (data.db).
+Только стандартная библиотека Python 3.9+. Данные — в SQLite (data.db), закрытый
+ключ — в teacher_key.json; оба файла остаются только на этом компьютере.
 """
 import csv
 import io
@@ -14,26 +17,33 @@ import secrets
 import socket
 import sqlite3
 import threading
+import time
+import urllib.request
 from datetime import datetime
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
+
+import rsa_lite
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 DB_PATH = os.path.join(BASE_DIR, "data.db")
+KEY_PATH = os.path.join(BASE_DIR, "teacher_key.json")
+DOCS_DIR = os.path.join(BASE_DIR, "docs")
+PUBLIC_JSON = os.path.join(DOCS_DIR, "public.json")
 
 DEFAULT_CONFIG = {
     "port": 8080,
     # Рассадка: ряды слева направо (как видит преподаватель со своего места),
-    # в каждом ряду номера мест от стола преподавателя к задней стене.
+    # в каждом ряду номера мест от стола преподавателя к задней стене (нумерация «змейкой»).
     "layout": {
         "rows": [
             [1, 2, 3, 4, 5, 6, 7],
-            [8, 9, 10, 11, 12, 13, 14],
+            [14, 13, 12, 11, 10, 9, 8],
             [15, 16, 17, 18, 19, 20, 21],
-            [22, 23, 24, 25, 26, 27, 28, 29, 30],
+            [30, 29, 28, 27, 26, 25, 24, 23, 22],
         ],
         "aisles_after": [1, 3],   # проход после 1-го и после 3-го ряда
         "teacher_rows": [2, 3],   # стол преподавателя перед этими рядами
@@ -49,7 +59,12 @@ DEFAULT_CONFIG = {
         {"n": 5, "start": "15:30", "end": "17:00"},
         {"n": 6, "start": "17:10", "end": "18:40"},
     ],
-    # Если пусто — адрес для QR-кодов определяется автоматически по IP в сети
+    # Онлайн-форма для студентов (GitHub Pages) — на неё ведут QR-коды
+    "public_form_url": "https://shoorait.github.io/student-control/",
+    # Ретранслятор: телефон отправляет туда зашифрованную анкету, сервер её забирает
+    "relay": "https://ntfy.sh",
+    "topic": "",  # генерируется автоматически при первом запуске
+    # Адрес сервера в локальной сети (запасной вариант). Пусто — определить автоматически
     "base_url": "",
 }
 
@@ -59,10 +74,28 @@ def load_config():
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH, encoding="utf-8") as f:
             cfg.update(json.load(f))
-    else:
+    changed = not os.path.exists(CONFIG_PATH)
+    for k in DEFAULT_CONFIG:  # дописать новые параметры в старый config.json
+        changed |= k not in cfg
+    if not cfg.get("topic"):
+        cfg["topic"] = "pcmon-" + secrets.token_urlsafe(18).replace("_", "x").replace("-", "y")
+        changed = True
+    if changed:
+        save = {k: cfg[k] for k in DEFAULT_CONFIG}
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(DEFAULT_CONFIG, f, ensure_ascii=False, indent=2)
+            json.dump(save, f, ensure_ascii=False, indent=2)
     return cfg
+
+
+def load_key():
+    if os.path.exists(KEY_PATH):
+        with open(KEY_PATH, encoding="utf-8") as f:
+            return rsa_lite.from_json(json.load(f))
+    print("Создаю ключ шифрования (несколько секунд)...")
+    key = rsa_lite.generate(2048)
+    with open(KEY_PATH, "w", encoding="utf-8") as f:
+        json.dump(rsa_lite.to_json(key), f)
+    return key
 
 
 CONFIG = load_config()
@@ -71,6 +104,7 @@ SEAT_POS = {pc: {"row": r + 1, "place": i + 1}
             for r, row in enumerate(CONFIG["layout"]["rows"])
             for i, pc in enumerate(row)}
 SEATS = sorted(SEAT_POS)
+KEY = load_key()
 SESSIONS = set()  # токены вошедших преподавателей
 DB_LOCK = threading.Lock()
 
@@ -94,7 +128,8 @@ def init_db():
                 pair INTEGER NOT NULL,
                 state TEXT NOT NULL,          -- ok | problem
                 comment TEXT NOT NULL DEFAULT '',
-                resolved_at TEXT              -- когда преподаватель закрыл проблему
+                resolved_at TEXT,             -- когда преподаватель закрыл проблему
+                relay_id TEXT UNIQUE          -- id сообщения ретранслятора (защита от дублей)
             );
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
             CREATE TABLE IF NOT EXISTS manual_busy (pc INTEGER PRIMARY KEY);
@@ -104,6 +139,10 @@ def init_db():
             "INSERT OR IGNORE INTO settings(key, value) VALUES ('session_start', ?)",
             (now(),),
         )
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(registrations)")}
+        if "relay_id" not in cols:
+            conn.execute("ALTER TABLE registrations ADD COLUMN relay_id TEXT")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_relay ON registrations(relay_id)")
 
 
 def now():
@@ -123,6 +162,117 @@ def lan_ip():
 
 def base_url():
     return CONFIG["base_url"].rstrip("/") or f"http://{lan_ip()}:{CONFIG['port']}"
+
+
+def public_config():
+    """То, что видит телефон студента: рассадка, звонки, канал и ОТКРЫТЫЙ ключ."""
+    return {"room": CONFIG["room"], "pairs": CONFIG["pairs"], "seats": SEAT_POS,
+            "relay": CONFIG["relay"].rstrip("/"), "topic": CONFIG["topic"],
+            "public_key": rsa_lite.public_jwk(KEY)}
+
+
+def write_public_json():
+    """Обновляет docs/public.json для GitHub Pages. True — если файл изменился."""
+    text = json.dumps(public_config(), ensure_ascii=False, indent=1) + "\n"
+    old = open(PUBLIC_JSON, encoding="utf-8").read() if os.path.exists(PUBLIC_JSON) else ""
+    if old == text:
+        return False
+    os.makedirs(DOCS_DIR, exist_ok=True)
+    with open(PUBLIC_JSON, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+    return True
+
+
+def form_url():
+    return CONFIG["public_form_url"] or base_url() + "/form"
+
+
+# ---------- приём анкет ----------
+def save_registration(data, ts, relay_id=None):
+    """Проверяет и сохраняет анкету. Возвращает текст ошибки или ''."""
+    def clean(key, limit):
+        return " ".join(str(data.get(key, "")).split())[:limit]
+
+    fio, grp, comment = clean("fio", 100), clean("grp", 30), clean("comment", 300)
+    state = data.get("state")
+    try:
+        pc, pair = int(data.get("pc", 0)), int(data.get("pair", 0))
+    except (TypeError, ValueError):
+        pc = pair = 0
+
+    errors = []
+    if pc not in SEAT_POS:
+        errors.append("Не выбрано рабочее место")
+    if len(fio) < 3:
+        errors.append("Укажите ФИО")
+    if not grp:
+        errors.append("Укажите группу")
+    if pair not in {p["n"] for p in CONFIG["pairs"]}:
+        errors.append("Выберите пару")
+    if state not in ("ok", "problem"):
+        errors.append("Укажите состояние компьютера")
+    if state == "problem" and not comment:
+        errors.append("Опишите проблему в комментарии")
+    if errors:
+        return "; ".join(errors)
+
+    with DB_LOCK, db() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO registrations(ts, pc, fio, grp, pair, state, comment, relay_id) "
+            "VALUES (?,?,?,?,?,?,?,?)", (ts, pc, fio, grp, pair, state, comment, relay_id))
+        conn.execute("DELETE FROM manual_busy WHERE pc=?", (pc,))
+    return ""
+
+
+RELAY_STATUS = {"ok": False, "since": None, "error": "ещё не подключено", "received": 0}
+
+
+def get_setting(key, default=None):
+    with db() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(key, value):
+    with DB_LOCK, db() as conn:
+        conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)", (key, value))
+
+
+def handle_relay_message(msg):
+    if msg.get("event") != "message":
+        return
+    ts = datetime.fromtimestamp(msg.get("time", time.time())).strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        data = json.loads(rsa_lite.decrypt_message(KEY, msg.get("message", "")).decode("utf-8"))
+        err = save_registration(data, ts, relay_id=msg["id"])
+        if err:
+            print(f"[онлайн] анкета отклонена: {err}")
+        else:
+            RELAY_STATUS["received"] += 1
+    except Exception as ex:  # чужое/повреждённое сообщение — пропускаем
+        print(f"[онлайн] не удалось расшифровать сообщение {msg.get('id')}: {ex}")
+    set_setting("relay_last_id", msg["id"])
+
+
+def relay_loop():
+    """Держит потоковое подключение к ntfy и забирает зашифрованные анкеты.
+    Сообщения хранятся на ntfy.sh 12 часов, так что анкеты, отправленные
+    пока сервер был выключен, будут получены при следующем запуске."""
+    base = CONFIG["relay"].rstrip("/") + "/" + quote(CONFIG["topic"])
+    while True:
+        since = get_setting("relay_last_id") or "12h"
+        url = f"{base}/json?since={quote(since)}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "pc-monitor"})
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                RELAY_STATUS.update(ok=True, since=now(), error="")
+                for line in resp:
+                    line = line.strip()
+                    if line:
+                        handle_relay_message(json.loads(line))
+        except Exception as ex:
+            RELAY_STATUS.update(ok=False, error=str(ex)[:200])
+            time.sleep(5)
 
 
 def board_state():
@@ -153,6 +303,7 @@ def board_state():
         "layout": CONFIG["layout"],
         "room": CONFIG["room"],
         "server_time": now(),
+        "relay": RELAY_STATUS,
     }
 
 
@@ -161,7 +312,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- помощники ----------
     def log_message(self, fmt, *args):  # тише в консоли
-        if "/api/state" not in (args[0] if args else ""):
+        if "/api/state" not in str(args[0] if args else ""):
             super().log_message(fmt, *args)
 
     def send(self, code, body, ctype="application/json; charset=utf-8", headers=None):
@@ -206,10 +357,10 @@ class Handler(BaseHTTPRequestHandler):
         path = url.path.rstrip("/") or "/"
 
         if path in ("/", "/form"):
-            return self.page("form.html")
-        if path == "/api/config":
-            return self.send(200, {"seats": SEAT_POS, "pairs": CONFIG["pairs"],
-                                   "room": CONFIG["room"]})
+            with open(os.path.join(DOCS_DIR, "index.html"), encoding="utf-8") as f:
+                return self.send(200, f.read(), "text/html; charset=utf-8")
+        if path == "/public.json":  # локальный режим: форма отправляет напрямую
+            return self.send(200, {**public_config(), "local": True})
         if path == "/login":
             return self.page("login.html")
 
@@ -226,8 +377,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/state":
             return self.send(200, board_state())
         if path == "/api/qrinfo":
-            return self.send(200, {"base_url": base_url(), "seats": SEAT_POS,
-                                   "room": CONFIG["room"]})
+            return self.send(200, {"form_url": form_url(), "local_url": base_url() + "/form",
+                                   "seats": SEAT_POS, "room": CONFIG["room"]})
         if path == "/export.csv":
             return self.export_csv()
         return self.send(404, {"error": "not found"})
@@ -265,7 +416,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.redirect("/login?error=1")
 
         if path == "/api/register":
-            return self.register(data)
+            err = save_registration(data, now())
+            return self.send(400, {"error": err}) if err else self.send(200, {"ok": True})
 
         if not self.is_teacher():
             return self.send(401, {"error": "auth"})
@@ -290,49 +442,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(404, {"error": "not found"})
         return self.send(200, {"ok": True})
 
-    def register(self, data):
-        def clean(key, limit=200):
-            return " ".join(str(data.get(key, "")).split())[:limit]
-
-        fio, grp, comment = clean("fio"), clean("grp", 50), clean("comment", 1000)
-        state = data.get("state")
-        try:
-            pc, pair = int(data.get("pc", 0)), int(data.get("pair", 0))
-        except (TypeError, ValueError):
-            pc = pair = 0
-
-        errors = []
-        if pc not in SEAT_POS:
-            errors.append("Не выбрано рабочее место")
-        if len(fio) < 3:
-            errors.append("Укажите ФИО")
-        if not grp:
-            errors.append("Укажите группу")
-        if pair not in {p["n"] for p in CONFIG["pairs"]}:
-            errors.append("Выберите пару")
-        if state not in ("ok", "problem"):
-            errors.append("Укажите состояние компьютера")
-        if state == "problem" and not comment:
-            errors.append("Опишите проблему в комментарии")
-        if errors:
-            return self.send(400, {"error": "; ".join(errors)})
-
-        with DB_LOCK, db() as conn:
-            conn.execute(
-                "INSERT INTO registrations(ts, pc, fio, grp, pair, state, comment) "
-                "VALUES (?,?,?,?,?,?,?)", (now(), pc, fio, grp, pair, state, comment))
-            conn.execute("DELETE FROM manual_busy WHERE pc=?", (pc,))
-        return self.send(200, {"ok": True})
-
 
 def main():
     init_db()
+    changed = write_public_json()
+    threading.Thread(target=relay_loop, daemon=True).start()
     port = int(CONFIG["port"])
     srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     print("=" * 60)
-    print(f"  Сервер запущен. Адрес в сети: {base_url()}")
-    print(f"  Преподаватель:  {base_url()}/teacher  (пароль в config.json)")
-    print(f"  QR-коды мест:   {base_url()}/qr")
+    print(f"  Преподаватель:  http://localhost:{port}/teacher  (пароль в config.json)")
+    print(f"  QR-коды мест:   http://localhost:{port}/qr")
+    print(f"  Онлайн-форма:   {form_url()}")
+    print(f"  Запасная форма в локальной сети: {base_url()}/form")
+    if changed:
+        print("\n  !!! Изменился docs/public.json (ключ, рассадка или звонки).")
+        print("      Загрузите его на GitHub, иначе онлайн-форма будет со старыми данными:")
+        print("      git add docs/public.json && git commit -m \"public.json\" && git push")
     print("  Остановить: Ctrl+C")
     print("=" * 60)
     try:

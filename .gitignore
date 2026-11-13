@@ -3,3 +3,4 @@ data.db
 data.db-*
 config.json
 __pycache__/
+teacher_key.json

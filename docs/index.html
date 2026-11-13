@@ -49,10 +49,10 @@
       </div>
 
       <label for="fio">ФИО студента</label>
-      <input id="fio" name="fio" autocomplete="name" placeholder="Иванов Иван Иванович" required>
+      <input id="fio" name="fio" maxlength="100" autocomplete="name" placeholder="Иванов Иван Иванович" required>
 
       <label for="grp">Группа</label>
-      <input id="grp" name="grp" placeholder="Например, ИСП-21" required>
+      <input id="grp" name="grp" maxlength="30" placeholder="Например, ИСП-21" required>
 
       <label for="pair">Пара</label>
       <select id="pair" name="pair" required></select>
@@ -66,7 +66,7 @@
       </div>
 
       <label for="comment">Комментарий <span class="hint" id="cHint">(необязательно)</span></label>
-      <textarea id="comment" name="comment" placeholder="Что не работает: не включается монитор, нет интернета, не запускается программа…"></textarea>
+      <textarea id="comment" name="comment" maxlength="300" placeholder="Что не работает: не включается монитор, нет интернета, не запускается программа…"></textarea>
 
       <button id="send" type="submit">Отправить</button>
       <div class="err" id="err" hidden></div>
@@ -94,7 +94,11 @@ function currentPair(pairs) {
   return pairs[pairs.length-1].n;
 }
 
-fetch("/api/config").then(r => r.json()).then(cfg => {
+// public.json: рассадка, звонки, канал ретранслятора и ОТКРЫТЫЙ ключ преподавателя.
+// На компьютере преподавателя сервер добавляет "local": true — тогда отправка идёт напрямую.
+let cfg = null;
+fetch("public.json", { cache: "no-store" }).then(r => r.json()).then(c => {
+  cfg = c;
   $("room").textContent = cfg.room;
   const pc = parseInt(params.get("pc"), 10);
   const pos = cfg.seats[pc];
@@ -111,7 +115,43 @@ fetch("/api/config").then(r => r.json()).then(cfg => {
   $("pair").innerHTML = cfg.pairs.map(p =>
     `<option value="${p.n}">${p.n} пара (${p.start}–${p.end})</option>`).join("");
   $("pair").value = currentPair(cfg.pairs);
-});
+}).catch(() => { $("err").textContent = "Не удалось загрузить форму, обновите страницу"; $("err").hidden = false; });
+
+// Шифрование анкеты открытым ключом преподавателя (RSA-OAEP, SHA-256), блоками по 190 байт.
+// Расшифровать может только программа на компьютере преподавателя.
+const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
+async function encryptPayload(obj) {
+  const key = await crypto.subtle.importKey("jwk", cfg.public_key,
+    { name: "RSA-OAEP", hash: "SHA-256" }, false, ["encrypt"]);
+  const bytes = new TextEncoder().encode(JSON.stringify(obj));
+  const parts = [];
+  for (let i = 0; i < bytes.length; i += 190)
+    parts.push(b64(await crypto.subtle.encrypt({ name: "RSA-OAEP" }, key, bytes.slice(i, i + 190))));
+  return "v1." + parts.join(".");
+}
+
+async function sendOnline(fd) {
+  const body = await encryptPayload(fd);
+  const r = await fetch(`${cfg.relay}/${cfg.topic}`, { method: "POST", body });
+  if (!r.ok) throw new Error(r.status === 429 ? "Слишком много отправок, попробуйте через минуту" : "Ошибка отправки");
+}
+
+async function sendLocal(fd) {
+  const r = await fetch("/api/register", { method: "POST",
+    headers: {"Content-Type": "application/json"}, body: JSON.stringify(fd) });
+  const res = await r.json();
+  if (!r.ok) throw new Error(res.error || "Ошибка отправки");
+}
+
+function validate(fd) {
+  const errs = [];
+  if (!fd.pc) errs.push("выберите рабочее место");
+  if ((fd.fio || "").trim().length < 3) errs.push("укажите ФИО");
+  if (!(fd.grp || "").trim()) errs.push("укажите группу");
+  if (!fd.state) errs.push("отметьте состояние компьютера");
+  if (fd.state === "problem" && !(fd.comment || "").trim()) errs.push("опишите проблему в комментарии");
+  return errs.length ? "Пожалуйста, " + errs.join(", ") : "";
+}
 
 $("fio").value = store.get("fio");
 $("grp").value = store.get("grp");
@@ -126,18 +166,17 @@ $("f").addEventListener("submit", async e => {
   e.preventDefault();
   const fd = Object.fromEntries(new FormData($("f")));
   $("err").hidden = true;
+  const problem = validate(fd);
+  if (problem || !cfg) { $("err").textContent = problem || "Форма ещё загружается"; $("err").hidden = false; return; }
   $("send").disabled = true;
   try {
-    const r = await fetch("/api/register", { method: "POST",
-      headers: {"Content-Type": "application/json"}, body: JSON.stringify(fd) });
-    const res = await r.json();
-    if (!r.ok) throw new Error(res.error || "Ошибка отправки");
+    await (cfg.local ? sendLocal(fd) : sendOnline(fd));
     store.set("fio", fd.fio); store.set("grp", fd.grp);
     $("formCard").hidden = true; $("doneCard").hidden = false;
     $("doneText").textContent = `Рабочее место № ${fd.pc}, ${fd.pair} пара. ` +
-      (fd.state === "problem" ? "Преподаватель получил сообщение о проблеме." : "Хорошей работы!");
+      (fd.state === "problem" ? "Сообщение о проблеме отправлено преподавателю." : "Хорошей работы!");
   } catch (ex) {
-    $("err").textContent = ex.message === "Failed to fetch" ? "Нет связи с сервером" : ex.message;
+    $("err").textContent = ex.message === "Failed to fetch" ? "Нет интернета — проверьте связь и отправьте ещё раз" : ex.message;
     $("err").hidden = false;
   } finally { $("send").disabled = false; }
 });

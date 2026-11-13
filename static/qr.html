@@ -22,22 +22,22 @@
 </head>
 <body>
 <div class="bar">
-  <b>Адрес сервера для QR:</b>
+  <b>Адрес формы для QR:</b>
   <input id="base">
   <button id="apply">Обновить</button>
   <button onclick="print()">Печать</button>
-  <span style="color:#667">Наклейте каждый код на своё рабочее место. Телефоны студентов должны быть в той же сети, что и этот компьютер.</span>
+  <span style="color:#667">Наклейте каждый код на своё рабочее место. Форма открывается с мобильного интернета; анкеты приходят на этот компьютер, пока запущен сервер.</span>
 </div>
 <div id="cards"></div>
 <script>
 const $ = id => document.getElementById(id);
 let info;
 function draw() {
-  const base = $("base").value.replace(/\/+$/, "");
+  const base = $("base").value.trim();
   $("cards").innerHTML = "";
   const seats = Object.entries(info.seats).sort((a, b) => a[0] - b[0]);
   for (const [i, p] of seats) {
-    const url = `${base}/form?pc=${i}`;
+    const url = `${base}${base.includes("?") ? "&" : "?"}pc=${i}`;
     const c = document.createElement("div");
     c.className = "card";
     c.innerHTML = `<div class="n">№ ${i}</div><div class="t">Ряд ${p.row}, место ${p.place}<br>Отсканируйте и зарегистрируйтесь</div><div class="q"></div><div class="u"></div>`;
@@ -47,7 +47,7 @@ function draw() {
     else c.querySelector(".q").textContent = "(нет интернета для генерации QR — используйте ссылку ниже)";
   }
 }
-fetch("/api/qrinfo").then(r => r.json()).then(d => { info = d; $("base").value = d.base_url; draw(); });
+fetch("/api/qrinfo").then(r => r.json()).then(d => { info = d; $("base").value = d.form_url; draw(); });
 $("apply").onclick = draw;
 </script>
 </body>
