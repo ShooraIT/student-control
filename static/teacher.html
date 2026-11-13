@@ -39,7 +39,7 @@
   @keyframes flash { 50% { background:#991b1b; } }
 
   /* схема аудитории */
-  #grid { display:grid; gap:8px; max-width:1100px; margin:0 auto; }
+  .map { display:grid; gap:8px; max-width:1100px; margin:0 auto; }
   .desk { grid-row:1; padding:10px; text-align:center; font-weight:700; color:#fff; background:#475569;
           border-radius:12px; margin-bottom:6px; }
   .rowlabel { text-align:center; font-size:12px; font-weight:700; color:var(--muted);
@@ -63,8 +63,28 @@
   .seat.problem { background:var(--badbg); border:3px solid var(--bad); animation:pulse 1.2s infinite; }
   .seat.problem .num, .seat.problem .st { color:var(--bad); }
   .seat .badge { position:absolute; top:4px; right:6px; font-size:18px; }
+  .seat .x { position:absolute; right:4px; bottom:4px; width:24px; height:24px; padding:0; border:0;
+             border-radius:6px; background:rgba(0,0,0,.06); color:var(--muted); font-size:14px; cursor:pointer; }
+  .seat .x:hover { background:var(--bad); color:#fff; }
+  .seat.hist { animation:none; cursor:default; }
+  .tabs { display:flex; gap:6px; margin-bottom:14px; }
+  .tab { font:inherit; font-weight:600; padding:8px 16px; border-radius:10px; border:1px solid var(--line);
+         background:#fff; cursor:pointer; }
+  .tab.active { background:var(--text); color:#fff; border-color:var(--text); }
+  .hbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px; }
+  .hbar input[type=date] { font:inherit; padding:7px 10px; border:1px solid var(--line); border-radius:10px; }
+  .chip { font:inherit; font-size:13px; padding:6px 10px; border-radius:999px; border:1px solid var(--line);
+          background:#fff; cursor:pointer; margin:2px 0; }
+  .chip.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .chip.empty { color:#9aa3b5; }
+  .chip b { margin-left:4px; }
+  .days { font-size:13px; color:var(--muted); margin-bottom:14px; }
+  .days .chip { padding:3px 8px; font-size:12px; }
+  #log, #hlog { overflow-x:auto; }
+  td .rm { font:inherit; font-size:12px; padding:3px 8px; border-radius:8px; border:1px solid var(--line);
+           background:#fff; color:var(--bad); cursor:pointer; }
   @media (max-width:700px) {
-    #grid { gap:5px; } .seat { padding:4px 6px; min-height:56px; }
+    .map { gap:5px; } .seat { padding:4px 6px; min-height:56px; }
     .seat .st, .seat .meta { display:none; } .seat .fio { font-size:12px; }
   }
   @keyframes pulse { 0%,100% { box-shadow:0 0 0 0 rgba(220,38,38,.6); } 50% { box-shadow:0 0 0 8px rgba(220,38,38,0); } }
@@ -95,7 +115,12 @@
 </header>
 <main>
   <div id="alerts"></div>
-  <div id="grid"></div>
+  <div class="tabs">
+    <button class="tab active" data-tab="live">Сейчас</button>
+    <button class="tab" data-tab="hist">История по парам</button>
+  </div>
+  <section id="live">
+  <div id="grid" class="map"></div>
   <div class="legend">
     <span><i style="background:var(--free);border:1px dashed #aab"></i>Свободно</span>
     <span><i style="background:var(--okbg);border:1px solid var(--ok)"></i>Зарегистрирован</span>
@@ -105,6 +130,19 @@
   </div>
   <h2 id="logTitle">Регистрации на текущей паре</h2>
   <div id="log"></div>
+  </section>
+
+  <section id="hist" hidden>
+    <div class="hbar">
+      <input type="date" id="hdate">
+      <span id="hpairs"></span>
+      <a class="btn" id="hcsv" href="#">Скачать CSV</a>
+    </div>
+    <div class="days" id="hdays"></div>
+    <div id="hgrid" class="map"></div>
+    <h2 id="hlogTitle" style="margin-top:18px"></h2>
+    <div id="hlog"></div>
+  </section>
 </main>
 
 <script>
@@ -166,55 +204,120 @@ function render() {
       <button class="btn" data-resolve="${p.id}">Решено</button>
     </div>`).join("");
 
-  // схема аудитории: стол преподавателя сверху, ряды — вертикальные колонки, между ними проходы
-  const L = s.layout, maxLen = Math.max(...L.rows.map(r => r.length));
+  drawMap($("grid"), s.layout, s.seats, { live: true });
+  const regs = s.seats.flatMap(x => x.regs).sort((a, b) => b.id - a.id);
+  $("log").innerHTML = logHTML(regs, "Пока никто не зарегистрировался.");
+}
+
+// Схема аудитории: стол преподавателя сверху, ряды — вертикальные колонки, между ними проходы.
+// live — текущая пара (клики, кнопка отмены); иначе — история (только просмотр).
+function drawMap(el, L, seats, { live }) {
+  const maxLen = Math.max(...L.rows.map(r => r.length));
   const tracks = [], colOf = {};
   L.rows.forEach((_, i) => {
     tracks.push("minmax(0,1fr)"); colOf[i + 1] = tracks.length;
     if (L.aisles_after.includes(i + 1) && i < L.rows.length - 1) tracks.push("28px");
   });
-  $("grid").style.gridTemplateColumns = tracks.join(" ");
+  el.style.gridTemplateColumns = tracks.join(" ");
   const tr = L.teacher_rows;
   let html = `<div class="desk" style="grid-column:${colOf[Math.min(...tr)]} / ${colOf[Math.max(...tr)] + 1}">🧑‍🏫 Стол преподавателя</div>`;
   L.aisles_after.filter(a => a < L.rows.length).forEach(a =>
     html += `<div class="aisle" style="grid-column:${colOf[a] + 1};grid-row:2 / span ${maxLen + 1}"></div>`);
   L.rows.forEach((_, i) => html += `<div class="rowlabel" style="grid-column:${colOf[i + 1]};grid-row:2">Ряд ${i + 1}</div>`);
 
-  html += s.seats.map(seat => {
+  html += seats.map(seat => {
     const last = seat.regs[seat.regs.length - 1];
     const others = new Set(seat.regs.map(r => r.fio.toLowerCase())).size - 1;
     let cls = "", st = "Свободно", inner = "";
     if (last) {
       cls = "ok"; st = "Зарегистрирован";
       inner = `<div class="fio">${esc(last.fio)}</div>
-               <div class="meta">${esc(last.grp)} · ${esc(last.pair_label)} · ${hm(last.ts)}${others > 0 ? ` · ещё ${others} чел.` : ""}</div>`;
+               <div class="meta">${esc(last.grp)} · ${live ? esc(last.pair_label) + " · " : ""}${hm(last.ts)}${others > 0 ? ` · ещё ${others} чел.` : ""}</div>`;
     } else if (seat.manual) {
       cls = "manual"; st = "Нет регистрации";
       inner = `<div class="meta">Занято, студент не отметился</div>`;
     }
     if (seat.problems.length) {
-      cls = "problem"; st = "Проблема";
-      inner += `<div class="prob">⚠️ ${esc(seat.problems[seat.problems.length-1].comment)}</div>`;
+      const p = seat.problems[seat.problems.length - 1];
+      cls = "problem"; st = p.resolved_at ? "Была проблема" : "Проблема";
+      inner += `<div class="prob">⚠️ ${esc(p.comment)}</div>`;
     }
     const tip = `Ряд ${seat.row}, место ${seat.place}\n` +
       seat.regs.map(r => `${hm(r.ts)} ${r.fio} (${r.grp}) — ${r.state === "ok" ? "исправен" : "проблема: " + r.comment}`).join("\n");
-    return `<div class="seat ${cls}" style="grid-column:${colOf[seat.row]};grid-row:${seat.place + 2}"
-      data-pc="${seat.pc}" data-has="${last ? 1 : 0}" title="${esc(tip)}">
-      ${seat.problems.length ? '<span class="badge">🚨</span>' : ""}
+    return `<div class="seat ${cls}${live ? "" : " hist"}" style="grid-column:${colOf[seat.row]};grid-row:${seat.place + 2}"
+      data-pc="${seat.pc}" data-has="${last ? 1 : 0}" data-live="${live ? 1 : 0}" title="${esc(tip)}">
+      ${seat.problems.length && live ? '<span class="badge">🚨</span>' : ""}
+      ${live && last ? `<button class="x" data-cancel-pc="${seat.pc}" title="Отменить регистрацию на этом месте">✕</button>` : ""}
       <div class="head"><span class="num">${seat.pc}</span><span class="st">${st}</span></div>${inner}</div>`;
   }).join("");
-  $("grid").innerHTML = html;
+  el.innerHTML = html;
+}
 
-  // журнал текущей пары
-  const regs = s.seats.flatMap(x => x.regs).sort((a, b) => b.id - a.id);
-  $("log").innerHTML = regs.length ? `<table>
-    <tr><th>Время</th><th>Место</th><th>ФИО</th><th>Группа</th><th>Пара</th><th>Состояние</th><th>Комментарий</th></tr>
+function logHTML(regs, emptyText) {
+  return regs.length ? `<table>
+    <tr><th>Время</th><th>Место</th><th>ФИО</th><th>Группа</th><th>Пара</th><th>Состояние</th><th>Комментарий</th><th></th></tr>
     ${regs.map(r => `<tr class="${r.state === "problem" ? "p" : ""}">
       <td>${hm(r.ts)}</td><td>${r.pc}</td><td>${esc(r.fio)}</td><td>${esc(r.grp)}</td><td>${esc(r.pair_label)}</td>
       <td>${r.state === "ok" ? "✅ Исправен" : (r.resolved_at ? "☑️ Проблема (решена)" : "⚠️ Проблема")}</td>
-      <td>${esc(r.comment)}</td></tr>`).join("")}</table>`
-    : `<div class="empty">Пока никто не зарегистрировался.</div>`;
+      <td>${esc(r.comment)}</td>
+      <td><button class="rm" data-cancel="${r.id}" title="Отменить регистрацию">Отменить</button></td></tr>`).join("")}</table>`
+    : `<div class="empty">${emptyText}</div>`;
 }
+
+// ---------- история по парам ----------
+let hist = null, hPair = null;
+const today = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
+const toMin = s => { const [h, m] = s.split(":").map(Number); return h * 60 + m; };
+const fmtDate = d => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
+
+// keepPair — после отмены регистрации остаёмся на той же паре; при смене дня выбираем заново
+async function loadHistory(date, keepPair = false) {
+  const r = await fetch(`/api/history?date=${encodeURIComponent(date)}`, { cache: "no-store" });
+  if (r.status === 401) { location.href = "/login?next=/teacher"; return; }
+  hist = await r.json();
+  $("hdate").value = hist.date;
+  if (!keepPair || hPair === null) hPair = defaultPair();
+  renderHistory();
+}
+
+function defaultPair() {
+  if (hist.date === today()) {  // сегодня — последняя начавшаяся пара
+    const m = new Date().getHours() * 60 + new Date().getMinutes();
+    const started = hist.pairs.filter(p => p.time && toMin(p.time.slice(0, 5)) <= m);
+    if (started.length) return started.sort((a, b) => toMin(b.time.slice(0, 5)) - toMin(a.time.slice(0, 5)))[0].id;
+  }
+  const withRegs = hist.pairs.find(p => p.count);
+  return withRegs ? withRegs.id : (hist.pairs[0] ? hist.pairs[0].id : "");
+}
+
+function renderHistory() {
+  const h = hist;
+  $("hpairs").innerHTML = h.pairs.map(p => `<button class="chip${p.id === hPair ? " active" : ""}${p.count ? "" : " empty"}"
+      data-hpair="${esc(p.id)}" title="${esc(p.time)}">${esc(p.label)}<b>${p.count || ""}</b></button>`).join(" ") +
+    ` <button class="chip${hPair === "" ? " active" : ""}" data-hpair="">Весь день<b>${h.regs.length || ""}</b></button>`;
+  $("hdays").innerHTML = h.days.length ? "Дни с регистрациями: " + h.days.map(d =>
+    `<button class="chip${d.date === h.date ? " active" : ""}" data-hday="${d.date}">${fmtDate(d.date)} <b>${d.n}</b></button>`).join(" ") : "";
+  const regs = h.regs.filter(r => hPair === "" || String(r.pair) === hPair);
+  const seats = h.seats.map(s => {
+    const own = regs.filter(r => r.pc === s.pc);
+    return { ...s, regs: own, problems: own.filter(r => r.state === "problem"), manual: false };
+  });
+  drawMap($("hgrid"), h.layout, seats, { live: false });
+  const p = h.pairs.find(x => x.id === hPair);
+  const busy = seats.filter(s => s.regs.length).length;
+  $("hlogTitle").textContent = `${fmtDate(h.date)} · ${p ? p.label + (p.time ? " (" + p.time + ")" : "") : "весь день"} · занято мест: ${busy} из ${seats.length}`;
+  $("hlog").innerHTML = logHTML(regs.slice().reverse(), "В эту пару никто не регистрировался.");
+  $("hcsv").href = `/export.csv?date=${h.date}` + (hPair ? `&pair=${encodeURIComponent(hPair)}` : "");
+}
+
+$("hdate").addEventListener("change", () => $("hdate").value && loadHistory($("hdate").value));
+
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
+  document.querySelectorAll(".tab").forEach(x => x.classList.toggle("active", x === t));
+  $("live").hidden = t.dataset.tab !== "live";
+  $("hist").hidden = t.dataset.tab !== "hist";
+  if (t.dataset.tab === "hist") loadHistory($("hdate").value || today());
+});
 
 async function load() {
   try {
@@ -236,11 +339,28 @@ async function load() {
   }
 }
 
-document.addEventListener("click", e => {
+document.addEventListener("click", async e => {
   const res = e.target.closest("[data-resolve]");
   if (res) return post("/api/resolve", { id: +res.dataset.resolve });
+  const cpc = e.target.closest("[data-cancel-pc]");
+  if (cpc) {
+    if (confirm(`Отменить регистрацию на месте №${cpc.dataset.cancelPc}?`)) await post("/api/cancel_pc", { pc: +cpc.dataset.cancelPc });
+    return;
+  }
+  const c1 = e.target.closest("[data-cancel]");
+  if (c1) {
+    if (confirm("Отменить эту регистрацию?")) {
+      await post("/api/cancel", { id: +c1.dataset.cancel });
+      if (!$("hist").hidden) loadHistory(hist.date, true);
+    }
+    return;
+  }
+  const hp = e.target.closest("[data-hpair]");
+  if (hp) { hPair = hp.dataset.hpair; return renderHistory(); }
+  const hd = e.target.closest("[data-hday]");
+  if (hd) return loadHistory(hd.dataset.hday);
   const seat = e.target.closest(".seat");
-  if (seat) {
+  if (seat && seat.dataset.live === "1") {
     const pc = +seat.dataset.pc;
     if (seat.classList.contains("problem")) {
       if (confirm(`Отметить проблемы на месте №${pc} как решённые?`)) post("/api/resolve_pc", { pc });

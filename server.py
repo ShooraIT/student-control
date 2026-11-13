@@ -158,7 +158,8 @@ def init_db():
                 state TEXT NOT NULL,          -- ok | problem
                 comment TEXT NOT NULL DEFAULT '',
                 resolved_at TEXT,             -- когда преподаватель закрыл проблему
-                relay_id TEXT UNIQUE          -- id сообщения ретранслятора (защита от дублей)
+                relay_id TEXT UNIQUE,         -- id сообщения ретранслятора (защита от дублей)
+                cancelled_at TEXT             -- регистрацию отменил преподаватель
             );
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
             CREATE TABLE IF NOT EXISTS manual_busy (pc INTEGER PRIMARY KEY);
@@ -170,6 +171,8 @@ def init_db():
             (now(),),
         )
         cols = {r[1] for r in conn.execute("PRAGMA table_info(registrations)")}
+        if "cancelled_at" not in cols:
+            conn.execute("ALTER TABLE registrations ADD COLUMN cancelled_at TEXT")
         if "relay_id" not in cols:
             conn.execute("ALTER TABLE registrations ADD COLUMN relay_id TEXT")
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_relay ON registrations(relay_id)")
@@ -306,16 +309,49 @@ def relay_loop():
             time.sleep(5)
 
 
+def day_type(date):
+    return "mon" if date.weekday() == 0 else "tue_sat"
+
+
+def history(date_str):
+    """Регистрации за день, по парам. Отменённые не показываются."""
+    try:
+        date = datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        date = datetime.now()
+    d = date.strftime("%Y-%m-%d")
+    with db() as conn:
+        regs = [dict(r) for r in conn.execute(
+            "SELECT * FROM registrations WHERE substr(ts, 1, 10) = ? AND cancelled_at IS NULL "
+            "ORDER BY id", (d,))]
+        days = [dict(r) for r in conn.execute(
+            "SELECT substr(ts, 1, 10) AS date, COUNT(*) AS n FROM registrations "
+            "WHERE cancelled_at IS NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 30")]
+    for r in regs:
+        r["pair_label"] = pair_label(r["pair"])
+    counts = {}
+    for r in regs:
+        counts[str(r["pair"])] = counts.get(str(r["pair"]), 0) + 1
+    day = CONFIG["schedule"]["days"][day_type(date)]
+    pairs = [{"id": p["id"], "label": pair_label(p["id"]),
+              "time": ", ".join("–".join(t) for t in day[p["id"]]), "count": counts.pop(p["id"], 0)}
+             for p in CONFIG["schedule"]["pairs"] if p["id"] in day]
+    pairs += [{"id": k, "label": pair_label(k), "time": "", "count": n} for k, n in counts.items()]
+    return {"date": d, "pairs": pairs, "regs": regs, "days": days,
+            "seats": [{"pc": n, **SEAT_POS[n]} for n in SEATS], "layout": CONFIG["layout"]}
+
+
 def board_state():
     with db() as conn:
         start = conn.execute(
             "SELECT value FROM settings WHERE key='session_start'"
         ).fetchone()["value"]
         regs = conn.execute(
-            "SELECT * FROM registrations WHERE ts >= ? ORDER BY id", (start,)
+            "SELECT * FROM registrations WHERE ts >= ? AND cancelled_at IS NULL ORDER BY id", (start,)
         ).fetchall()
         open_problems = conn.execute(
-            "SELECT * FROM registrations WHERE state='problem' AND resolved_at IS NULL ORDER BY id"
+            "SELECT * FROM registrations WHERE state='problem' AND resolved_at IS NULL "
+            "AND cancelled_at IS NULL ORDER BY id"
         ).fetchall()
         manual = {r["pc"] for r in conn.execute("SELECT pc FROM manual_busy")}
 
@@ -416,22 +452,31 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/qrinfo":
             return self.send(200, {"form_url": form_url(), "local_url": base_url() + "/form",
                                    "seats": SEAT_POS, "room": CONFIG["room"]})
+        if path == "/api/history":
+            return self.send(200, history(parse_qs(url.query).get("date", [""])[0]))
         if path == "/export.csv":
-            return self.export_csv()
+            q = parse_qs(url.query)
+            return self.export_csv(q.get("date", [""])[0], q.get("pair", [""])[0])
         return self.send(404, {"error": "not found"})
 
-    def export_csv(self):
+    def export_csv(self, date="", pair=""):
+        sql, args = "SELECT * FROM registrations WHERE 1=1", []
+        if date:
+            sql += " AND substr(ts, 1, 10) = ?"; args.append(date)
+        if pair:
+            sql += " AND pair = ?"; args.append(pair)
         with db() as conn:
-            rows = conn.execute("SELECT * FROM registrations ORDER BY id").fetchall()
+            rows = conn.execute(sql + " ORDER BY id", args).fetchall()
         buf = io.StringIO()
         w = csv.writer(buf, delimiter=";")
         w.writerow(["Отметка времени", "ФИО студента", "Группа студента", "Пара",
-                    "Рабочее место", "Состояние компьютера", "Комментарий", "Проблема закрыта"])
+                    "Рабочее место", "Состояние компьютера", "Комментарий", "Проблема закрыта",
+                    "Регистрация отменена"])
         for r in rows:
             w.writerow([r["ts"], r["fio"], r["grp"], pair_label(r["pair"]), r["pc"],
                         "Исправен" if r["state"] == "ok" else "Есть проблемы",
-                        r["comment"], r["resolved_at"] or ""])
-        name = f"registrations_{datetime.now():%Y-%m-%d}.csv"
+                        r["comment"], r["resolved_at"] or "", r["cancelled_at"] or ""])
+        name = f"registrations_{date or datetime.now().strftime('%Y-%m-%d')}{'_' + pair if pair else ''}.csv"
         self.send(200, "﻿" + buf.getvalue(), "text/csv; charset=utf-8",
                   {"Content-Disposition": f'attachment; filename="{name}"'})
 
@@ -468,6 +513,13 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/resolve_pc":
                 conn.execute("UPDATE registrations SET resolved_at=? WHERE pc=? AND state='problem' "
                              "AND resolved_at IS NULL", (now(), int(data.get("pc", 0))))
+            elif path == "/api/cancel":  # отменить одну регистрацию
+                conn.execute("UPDATE registrations SET cancelled_at=? WHERE id=? AND cancelled_at IS NULL",
+                             (now(), int(data.get("id", 0))))
+            elif path == "/api/cancel_pc":  # отменить регистрации места на текущей паре
+                start = conn.execute("SELECT value FROM settings WHERE key='session_start'").fetchone()[0]
+                conn.execute("UPDATE registrations SET cancelled_at=? WHERE pc=? AND ts>=? "
+                             "AND cancelled_at IS NULL", (now(), int(data.get("pc", 0)), start))
             elif path == "/api/new_session":
                 conn.execute("UPDATE settings SET value=? WHERE key='session_start'", (now(),))
                 conn.execute("DELETE FROM manual_busy")
