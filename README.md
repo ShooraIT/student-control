@@ -26,7 +26,7 @@
 
 Двойной клик по `start.bat` (или `py server.py`). Компьютеру преподавателя нужен интернет.
 
-- http://localhost:8080/teacher — экран преподавателя (пароль по умолчанию `teacher`, смените в `config.json`).
+- http://localhost:8080/teacher — экран преподавателя (смените в `config.json`).
 - http://localhost:8080/qr — печать QR-кодов для 30 мест (ведут на онлайн-форму).
 - http://localhost:8080/export.csv — весь журнал (открывается в Excel).
 
